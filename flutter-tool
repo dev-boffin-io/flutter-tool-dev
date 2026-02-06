@@ -1,0 +1,345 @@
+#!/usr/bin/env bash
+set -euo pipefail
+IFS=$'\n\t'
+
+# ================= CONFIG =================
+DEFAULT_REPO="zhzhzhy/Flutter-SDK-ARM64"
+FLUTTER_REPO="${FLUTTER_REPO_URL:-$DEFAULT_REPO}"
+FLUTTER_VERSION="${FLUTTER_VERSION:-latest}"
+CACHE_DIR="$HOME/.cache/flutter-flexible"
+INSTALL_DIR="$HOME/.flutter-flexible"
+BIN_DIR="$HOME/.local/bin"
+
+FLUTTER_BIN="$INSTALL_DIR/flutter/bin/flutter"
+VERSION_FILE="$CACHE_DIR/.version"
+BASHRC="$HOME/.bashrc"
+
+# ================= FLAGS =================
+CMD="${1:-help}"; shift || true
+AUTO_YES=0
+NO_API=0
+PURGE_CACHE=0
+UPGRADE_FLAG=0
+FIX_DART_FLAG=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --yes|-y) AUTO_YES=1 ;;
+    --no-api) NO_API=1 ;;
+    --purge-cache) PURGE_CACHE=1 ;;
+    --upgrade) UPGRADE_FLAG=1 ;;
+    --fix-dart) FIX_DART_FLAG=1 ;;
+    *) echo -e "\e[31mUnknown flag: $1\e[0m"; exit 1 ;;
+  esac
+  shift
+done
+
+# ================= COLORS =================
+COLOR_INFO="\e[34m"
+COLOR_SUCCESS="\e[32m"
+COLOR_ERROR="\e[31m"
+COLOR_WARN="\e[33m"
+COLOR_RESET="\e[0m"
+
+# ================= UTILS =================
+die() { echo -e "${COLOR_ERROR}❌ $*${COLOR_RESET}"; exit 1; }
+log() { echo -e "${COLOR_INFO}▶ $*${COLOR_RESET}"; }
+success() { echo -e "${COLOR_SUCCESS}✅ $*${COLOR_RESET}"; }
+warn() { echo -e "${COLOR_WARN}⚠ $*${COLOR_RESET}"; }
+
+need() { command -v "$1" >/dev/null || die "Missing dependency: $1"; }
+
+spinner() {
+  local pid=$1
+  local delay=0.1
+  local spinstr='|/-\'
+  while kill -0 "$pid" 2>/dev/null; do
+    for i in $(seq 0 3); do
+      printf "\r${COLOR_INFO}⏳ ${spinstr:i:1} $2...${COLOR_RESET}"
+      sleep $delay
+    done
+  done
+  printf "\r${COLOR_SUCCESS}✔ $2${COLOR_RESET}\n"
+}
+
+basic_checks() { need curl; need unzip; need tar; }
+
+is_installed() {
+  [[ -x "$FLUTTER_BIN" ]] && "$FLUTTER_BIN" --version >/dev/null 2>&1
+}
+
+# ================= DEPENDENCY CHECK =================
+check_dependencies() {
+  local ext="$1"
+  case "$ext" in
+    zip) need unzip ;;
+    xz|tar.xz) need tar ;;
+    *) die "Unsupported archive extension: $ext" ;;
+  esac
+}
+
+# ================= FETCH ASSET =================
+get_tag() {
+  local tag
+  if [[ "$FLUTTER_VERSION" == "latest" ]]; then
+    if [[ "$NO_API" -eq 0 ]]; then
+      if command -v jq >/dev/null; then
+        tag=$(curl -s -H "Accept: application/vnd.github.v3+json" \
+          "https://api.github.com/repos/$FLUTTER_REPO/releases/latest" | jq -r '.tag_name // empty')
+      else
+        local pid
+        curl -s -H "Accept: application/vnd.github.v3+json" \
+          "https://api.github.com/repos/$FLUTTER_REPO/releases/latest" &
+        pid=$!
+        spinner $pid "Fetching latest tag"
+        wait $pid
+        tag=$(curl -s -H "Accept: application/vnd.github.v3+json" \
+          "https://api.github.com/repos/$FLUTTER_REPO/releases/latest" \
+          | grep -Po '"tag_name":.*?[^\\]",' | sed 's/.*"tag_name": "\(.*\)".*/\1/')
+      fi
+    else
+      tag=$(curl -sI "https://github.com/$FLUTTER_REPO/releases/latest" \
+        | grep -i location | sed 's#.*/tag/##' | tr -d '\r' | sed 's/ *$//')
+    fi
+  else
+    tag="$FLUTTER_VERSION"
+  fi
+  [[ -z "$tag" ]] && die "Failed to detect release tag for $FLUTTER_REPO"
+  echo "$tag"
+}
+
+get_asset_url() {
+  local tag="$1" assets asset_url
+  if [[ "$NO_API" -eq 0 ]]; then
+    if command -v jq >/dev/null; then
+      assets=$(curl -s -H "Accept: application/vnd.github.v3+json" \
+        "https://api.github.com/repos/$FLUTTER_REPO/releases/tags/$tag" | jq -r '.assets[].browser_download_url // empty')
+    else
+      assets=$(curl -s -H "Accept: application/vnd.github.v3+json" \
+        "https://api.github.com/repos/$FLUTTER_REPO/releases/tags/$tag" \
+        | grep -Po '"browser_download_url":.*?[^\\]",' | sed 's/.*"browser_download_url": "\(.*\)".*/\1/')
+    fi
+    if [[ "$FLUTTER_REPO" == "zhzhzhy/Flutter-SDK-ARM64" ]]; then
+      asset_url=$(echo "$assets" | grep -Ei 'Flutter-SDK.*\.(zip|tar\.xz)' | head -n1)
+    else
+      asset_url=$(echo "$assets" | grep -iE '(arm64|linux).*\.(zip|tar\.xz)' | head -n1)
+    fi
+  else
+    warn "Using fallback URL in --no-api mode"
+    if [[ "$FLUTTER_REPO" == "zhzhzhy/Flutter-SDK-ARM64" ]]; then
+      asset_url="https://github.com/$FLUTTER_REPO/releases/download/$tag/Flutter-SDK-$tag.zip"
+    else
+      asset_url="https://github.com/$FLUTTER_REPO/releases/download/$tag/flutter_linux_arm64_$tag.tar.xz"
+    fi
+  fi
+  [[ -z "$asset_url" ]] && die "Failed to detect Flutter asset"
+  echo "$asset_url"
+}
+
+get_flutter_asset() {
+  local tag asset_url ext
+  tag=$(get_tag)
+  asset_url=$(get_asset_url "$tag")
+  ext="${asset_url##*.}"
+  echo "$asset_url|$tag|$ext"
+}
+
+# ================= DART ARM64 FIX =================
+fix_dart_sdk() {
+  local dart_url="https://storage.googleapis.com/dart-archive/channels/stable/release/latest/sdk/dartsdk-linux-arm64-release.zip"
+  local dart_zip="$CACHE_DIR/dart-sdk-arm64.zip"
+
+  log "🚀 Fixing Dart SDK..."
+  mkdir -p "$CACHE_DIR"
+  curl -L --fail --progress-bar -o "$dart_zip" "$dart_url"
+
+  log "[WORKING] Removing incompatible Dart SDK..."
+  rm -rf "$INSTALL_DIR/flutter/bin/cache/dart-sdk"
+  success "[DONE] Dart SDK removed"
+
+  log "[WORKING] Injecting ARM64 Dart SDK..."
+  unzip -q "$dart_zip" -d "$INSTALL_DIR/flutter/bin/cache"
+  chmod +x "$INSTALL_DIR/flutter/bin/cache/dart-sdk/bin/dart"
+  success "[DONE] Dart SDK replaced"
+}
+
+# ================= SHELL INTEGRATION =================
+setup_shell_integration() {
+  local start="# === FLUTTER-FLEXIBLE START ==="
+  local end="# === FLUTTER-FLEXIBLE END ==="
+
+  sed -i "/$start/,/$end/d" "$BASHRC" || true
+
+  cat >>"$BASHRC" <<EOF
+$start
+flutter-on() {
+  if [[ ":\$PATH:" != *":$INSTALL_DIR/flutter/bin:"* ]]; then
+    export PATH="$INSTALL_DIR/flutter/bin:\$PATH"
+    echo -e "${COLOR_SUCCESS}✅ Flutter bin added to PATH.${COLOR_RESET}"
+  else
+    echo -e "${COLOR_INFO}▶ Flutter bin already in PATH.${COLOR_RESET}"
+  fi
+}
+
+flutter-off() {
+  export PATH=\$(echo "\$PATH" | sed -E "s#$INSTALL_DIR/flutter/bin:##")
+  echo -e "${COLOR_WARN}⚠ Flutter bin removed from PATH.${COLOR_RESET}"
+}
+$end
+EOF
+  success "Shell integration installed. Run 'source ~/.bashrc' and then 'flutter-on'."
+}
+
+remove_shell_integration() {
+  local start="# === FLUTTER-FLEXIBLE START ==="
+  local end="# === FLUTTER-FLEXIBLE END ==="
+  sed -i "/$start/,/$end/d" "$BASHRC" || true
+  success "Removed flutter shell functions from ~/.bashrc"
+}
+
+# ================= UNINSTALL =================
+purge_all() {
+  local remove_cache=${1:-0}
+
+  if [[ -d "$INSTALL_DIR/flutter" ]]; then
+    log "[WORKING] Removing Flutter installation..."
+    rm -rf "$INSTALL_DIR/flutter"
+    success "[DONE] Flutter removed"
+  else
+    warn "Flutter installation not found"
+  fi
+
+  if [[ "$remove_cache" -eq 1 && -d "$CACHE_DIR" ]]; then
+    log "[WORKING] Removing cache directory..."
+    rm -rf "$CACHE_DIR"
+    success "[DONE] Cache removed"
+  fi
+
+  remove_shell_integration
+  success "Flutter completely uninstalled."
+}
+
+# ================= INSTALL =================
+install_flutter() {
+  mkdir -p "$CACHE_DIR" "$INSTALL_DIR" "$BIN_DIR"
+
+  if is_installed; then
+    log "Flutter already installed"
+    [[ "$UPGRADE_FLAG" -eq 1 ]] && upgrade_flutter || check_update
+    return
+  fi
+
+  IFS='|' read -r ASSET_URL actual_tag ext <<< "$(get_flutter_asset)"
+  check_dependencies "$ext"
+
+  FLUTTER_FILE="$CACHE_DIR/flutter.${ext}"
+
+  log "Downloading Flutter ($ext) from $ASSET_URL"
+  curl -L --fail --progress-bar -o "$FLUTTER_FILE" "$ASSET_URL"
+
+  log "[WORKING] Extracting Flutter..."
+  tmpdir=$(mktemp -d "$INSTALL_DIR/flutter_tmp.XXXX")
+  mkdir -p "$tmpdir"
+  if [[ "$ext" == "zip" ]]; then
+    unzip -q "$FLUTTER_FILE" -d "$tmpdir"
+  else
+    tar -xf "$FLUTTER_FILE" -C "$tmpdir"
+  fi
+  success "[DONE] Extraction complete"
+
+  log "[WORKING] Moving files..."
+  rm -rf "$INSTALL_DIR/flutter"
+  mv "$tmpdir/flutter" "$INSTALL_DIR/flutter"
+  rm -rf "$tmpdir"
+  success "[DONE] Files moved"
+
+  echo "$actual_tag" > "$VERSION_FILE"
+
+  [[ "$FIX_DART_FLAG" -eq 1 ]] && fix_dart_sdk
+  setup_shell_integration
+
+  # ================= SUMMARY CARD =================
+  echo -e "\n${COLOR_INFO}╔════════════════════════════════╗${COLOR_RESET}"
+  echo -e "${COLOR_INFO}║        Flutter Installation        ║${COLOR_RESET}"
+  echo -e "${COLOR_INFO}╠════════════════════════════════╣${COLOR_RESET}"
+  printf "${COLOR_INFO}║ %-20s : %-14s ║\n${COLOR_RESET}" "Version" "$actual_tag"
+  printf "${COLOR_INFO}║ %-20s : %-14s ║\n${COLOR_RESET}" "Install Path" "$INSTALL_DIR/flutter"
+  echo -e "${COLOR_INFO}╚════════════════════════════════╝${COLOR_RESET}\n"
+  echo -e "${COLOR_INFO}▶ Run 'source ~/.bashrc' then 'flutter-on' to activate.${COLOR_RESET}"
+}
+
+# ================= UPGRADE =================
+upgrade_flutter() {
+  if ! is_installed; then
+    die "Flutter is not installed, cannot upgrade."
+  fi
+  log "🚀 Upgrading Flutter..."
+  install_flutter
+}
+
+# ================= UPDATE CHECK =================
+check_update() {
+  if ! is_installed; then
+    die "Flutter is not installed, cannot check updates."
+  fi
+  log "Checking for updates..."
+  local latest_tag
+  latest_tag=$(get_tag)
+  local current_tag
+  current_tag=$(<"$VERSION_FILE")
+  if [[ "$latest_tag" != "$current_tag" ]]; then
+    log "Update available: $latest_tag (current: $current_tag)"
+    [[ "$AUTO_YES" -eq 1 ]] && upgrade_flutter
+  else
+    success "Flutter is up to date (version $current_tag)"
+  fi
+}
+
+# ================= DOCTOR =================
+doctor() {
+  if ! is_installed; then
+    die "Flutter is not installed."
+  fi
+  log "🚀 Running flutter doctor..."
+  "$FLUTTER_BIN" doctor
+}
+
+# ================= HELP =================
+help() {
+
+  cat <<EOF
+
+  "Flutter ARM64 Installer v1.0.1 (Community-Distro)"
+
+Commands:
+  install      Install Flutter ARM64
+  upgrade      Upgrade existing Flutter installation
+  update       Check for updates
+  doctor       Run Flutter doctor
+  purge        Uninstall Flutter completely (--purge-cache to remove cache)
+  version|-v   Show installer version
+  help|-h      Show this help menu
+
+Flags:
+  --yes, -y       Automatic yes to prompts
+  --no-api        Disable GitHub API usage
+  --purge-cache   Remove cache during purge
+  --upgrade       Upgrade Flutter if already installed
+  --fix-dart      Replace Dart SDK with ARM64 binary
+EOF
+}
+
+# ================= MAIN =================
+basic_checks
+case "$CMD" in
+  install)
+    [[ "$UPGRADE_FLAG" -eq 1 ]] && upgrade_flutter || install_flutter
+    ;;
+  upgrade) upgrade_flutter ;;
+  update) check_update ;;
+  purge) purge_all "$PURGE_CACHE" ;;
+  doctor) doctor ;;
+  version|-v) echo "flutter-tool v1.0.1 (Community-Distro)" ;;
+  help|-h|"") help ;;
+  *) help; exit 1 ;;
+esac
