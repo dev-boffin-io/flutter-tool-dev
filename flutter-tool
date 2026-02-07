@@ -51,15 +51,16 @@ need() { command -v "$1" >/dev/null || die "Missing dependency: $1"; }
 
 spinner() {
   local pid=$1
+  local msg=$2
   local delay=0.1
   local spinstr='|/-\'
   while kill -0 "$pid" 2>/dev/null; do
     for i in $(seq 0 3); do
-      printf "\r${COLOR_INFO}⏳ ${spinstr:i:1} $2...${COLOR_RESET}"
+      printf "\r${COLOR_INFO}⏳ ${spinstr:i:1} $msg...${COLOR_RESET}"
       sleep $delay
     done
   done
-  printf "\r${COLOR_SUCCESS}✔ $2${COLOR_RESET}\n"
+  printf "\r${COLOR_SUCCESS}✔ $msg${COLOR_RESET}\n"
 }
 
 basic_checks() { need curl; need unzip; need tar; }
@@ -144,6 +145,18 @@ get_flutter_asset() {
   echo "$asset_url|$tag|$ext"
 }
 
+# ================= FLUTTER PREFLIGHT =================
+flutter_preflight() {
+  log "🧪 Running Flutter preflight (initial setup & cache warmup)..."
+  (
+    "$FLUTTER_BIN" --version >/dev/null 2>&1
+  ) &
+  local pid=$!
+  spinner "$pid" "Flutter initial configuration"
+  wait "$pid" || die "Flutter preflight failed"
+  success "Flutter preflight completed"
+}
+
 # ================= DART ARM64 FIX =================
 fix_dart_sdk() {
   local dart_url="https://storage.googleapis.com/dart-archive/channels/stable/release/latest/sdk/dartsdk-linux-arm64-release.zip"
@@ -160,6 +173,7 @@ fix_dart_sdk() {
   log "[WORKING] Injecting ARM64 Dart SDK..."
   unzip -q "$dart_zip" -d "$INSTALL_DIR/flutter/bin/cache"
   chmod +x "$INSTALL_DIR/flutter/bin/cache/dart-sdk/bin/dart"
+  rm -rf "$INSTALL_DIR/flutter/bin/cache/flutter_tools.snapshot"
   success "[DONE] Dart SDK replaced"
 }
 
@@ -255,10 +269,12 @@ install_flutter() {
 
   echo "$actual_tag" > "$VERSION_FILE"
 
+  flutter_preflight
   [[ "$FIX_DART_FLAG" -eq 1 ]] && fix_dart_sdk
+  log "🚀 Running initial Flutter doctor..."
+  "$FLUTTER_BIN" doctor
   setup_shell_integration
 
-  # ================= SUMMARY CARD =================
   echo -e "\n${COLOR_INFO}╔════════════════════════════════╗${COLOR_RESET}"
   echo -e "${COLOR_INFO}║        Flutter Installation        ║${COLOR_RESET}"
   echo -e "${COLOR_INFO}╠════════════════════════════════╣${COLOR_RESET}"
@@ -306,10 +322,9 @@ doctor() {
 
 # ================= HELP =================
 help() {
-
   cat <<EOF
 
-  "Flutter ARM64 Installer v1.0.1 (Community-Distro)"
+  "Flutter ARM64 Installer v1.0.2 (Community-Distro)"
 
 Commands:
   install      Install Flutter ARM64
@@ -339,7 +354,7 @@ case "$CMD" in
   update) check_update ;;
   purge) purge_all "$PURGE_CACHE" ;;
   doctor) doctor ;;
-  version|-v) echo "flutter-tool v1.0.1 (Community-Distro)" ;;
+  version|-v) echo "flutter-tool v1.0.2 (Community-Distro)" ;;
   help|-h|"") help ;;
   *) help; exit 1 ;;
 esac
