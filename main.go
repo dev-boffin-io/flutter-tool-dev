@@ -12,7 +12,7 @@ import (
 //go:embed flutter-tool
 var scriptContent string
 
-var version = "1.0.1"
+var version = "1.0.2"
 
 func main() {
 	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-v") {
