@@ -1,56 +1,122 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -Eeuo pipefail
 
-# Configuration
-BINARY_NAME="flutter-tool"
-SOURCE_FILE="main.go"
+# ==============================
+# CONFIG
+# ==============================
+APP_NAME="flutter-tool"
 OUTPUT_DIR="./bin"
+TARGET_OS="linux"
+TARGET_ARCH="arm64"
 
-# Colors
-BLUE="\e[34m"; GREEN="\e[32m"; RED="\e[31m"; NC="\e[0m"; BOLD="\e[1m"
+# ==============================
+# COLORS
+# ==============================
+BLUE="\033[1;34m"
+GREEN="\033[1;32m"
+RED="\033[1;31m"
+YELLOW="\033[1;33m"
+NC="\033[0m"
+BOLD="\033[1m"
 
-echo -e "${BLUE}${BOLD}📦 Initializing Go module...${NC}"
-# Initialize module if go.mod doesn't exist
-if [ ! -f "go.mod" ]; then
-    go mod init flutter-tool &>/dev/null
-    go mod tidy &>/dev/null
-    echo "  (Module initialized)"
-else
-    echo "  (Already initialized)"
-fi
+echo -e "${BLUE}${BOLD}🚀 Flutter Tool ARM Production Builder${NC}"
+echo "----------------------------------------"
 
-# Create bin directory if it doesn't exist
-if [ ! -d "$OUTPUT_DIR" ]; then
-    mkdir -p "$OUTPUT_DIR"
-fi
-
-echo -e "\n${BLUE}${BOLD}🔨 Building ARM64 binary to ${OUTPUT_DIR}/${BINARY_NAME}...${NC}"
-
-# Build process with optimization flags
-GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -ldflags="-s -w" -o "${OUTPUT_DIR}/${BINARY_NAME}" "$SOURCE_FILE"
-
-if [ -f "${OUTPUT_DIR}/${BINARY_NAME}" ]; then
-    echo -e "\n${GREEN}${BOLD}✅ SUCCESS!${NC}"
-    echo -e "----------------------------------------"
-    
-    # Show comparison logic
-    # Note: 'flutter-tool' (shell) vs binary comparison
-    echo -e "📊 ${BOLD}Size Summary:${NC}"
-    if [ -f "flutter-tool" ]; then
-        ORIG_SIZE=$(ls -lh flutter-tool | awk '{print $5}')
-        echo -e "  Shell Script: $ORIG_SIZE"
-    fi
-    BIN_SIZE=$(ls -lh "${OUTPUT_DIR}/${BINARY_NAME}" | awk '{print $5}')
-    echo -e "  Binary:       $BIN_SIZE"
-    
-    echo -e "----------------------------------------"
-    echo -e "🧪 ${BOLD}Test it:${NC}"
-    echo -e "  ${OUTPUT_DIR}/${BINARY_NAME} help"
-    echo -e "  ${OUTPUT_DIR}/${BINARY_NAME} --version"
-    
-    echo -e "\n📦 ${BOLD}Install globally:${NC}"
-    echo -e "  sudo cp ${OUTPUT_DIR}/${BINARY_NAME} /usr/local/bin/"
-    echo "----------------------------------------"
-else
-    echo -e "\n${RED}${BOLD}❌ Build failed!${NC}"
+# ==============================
+# CHECK GO INSTALL
+# ==============================
+if ! command -v go &>/dev/null; then
+    echo -e "${RED}❌ Go is not installed.${NC}"
     exit 1
 fi
+
+# ==============================
+# INIT MODULE + DEP
+# ==============================
+init_module() {
+    echo -e "${BLUE}${BOLD}📦 Checking Go module...${NC}"
+
+    if [ ! -f "go.mod" ]; then
+        go mod init flutter-tool
+        echo -e "${GREEN}✔ go.mod created${NC}"
+    else
+        echo -e "${GREEN}✔ go.mod exists${NC}"
+    fi
+
+    echo -e "${BLUE}📥 Installing dependencies...${NC}"
+    
+    go mod tidy
+}
+
+# ==============================
+# BUILD
+# ==============================
+build_binary() {
+
+    mkdir -p "$OUTPUT_DIR"
+    OUTPUT_PATH="${OUTPUT_DIR}/${APP_NAME}"
+
+    # 🔥 Remove old local binary
+    if [ -f "$OUTPUT_PATH" ]; then
+        echo -e "${YELLOW}⚠ Removing old binary: $OUTPUT_PATH${NC}"
+        rm -f "$OUTPUT_PATH"
+    fi
+
+    echo -e "\n${BLUE}${BOLD}🔨 Building ${TARGET_OS}/${TARGET_ARCH}...${NC}"
+
+    CGO_ENABLED=0 GOOS="$TARGET_OS" GOARCH="$TARGET_ARCH" \
+        go build -ldflags="-s -w" -o "$OUTPUT_PATH" .
+
+    if [ -f "$OUTPUT_PATH" ]; then
+        echo -e "\n${GREEN}${BOLD}✅ BUILD SUCCESS${NC}"
+        echo "----------------------------------------"
+        ls -lh "$OUTPUT_PATH"
+        echo "----------------------------------------"
+        echo -e "🧪 Test on ARM:"
+        echo -e "  ${OUTPUT_PATH} --version"
+    else
+        echo -e "${RED}❌ Build failed${NC}"
+        exit 1
+    fi
+}
+
+# ==============================
+# INSTALL
+# ==============================
+install_global() {
+
+    CURRENT_OS="$(uname -s)"
+
+    if [[ "$CURRENT_OS" != MINGW* && \
+          "$CURRENT_OS" != MSYS* && \
+          "$CURRENT_OS" != CYGWIN* ]]; then
+
+        echo -e "\n${YELLOW}📦 Install globally? (y/n)${NC}"
+        read -r choice
+
+        if [[ "$choice" == "y" ]]; then
+
+            TARGET_PATH="/usr/local/bin/${APP_NAME}"
+
+            # 🔥 Remove old global binary if exists
+            if [ -f "$TARGET_PATH" ]; then
+                echo -e "${YELLOW}⚠ Removing old installed binary: $TARGET_PATH${NC}"
+                sudo rm -f "$TARGET_PATH"
+            fi
+
+            sudo cp "${OUTPUT_DIR}/${APP_NAME}" "$TARGET_PATH"
+            sudo chmod +x "$TARGET_PATH"
+
+            echo -e "${GREEN}✔ Installed to $TARGET_PATH${NC}"
+        fi
+    fi
+}
+
+# ==============================
+# MAIN
+# ==============================
+init_module
+build_binary
+install_global
+
+echo -e "\n${GREEN}${BOLD}🎉 ARM Build Ready & Clean.${NC}"

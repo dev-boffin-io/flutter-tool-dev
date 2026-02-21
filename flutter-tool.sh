@@ -6,8 +6,8 @@ IFS=$'\n\t'
 DEFAULT_REPO="zhzhzhy/Flutter-SDK-ARM64"
 FLUTTER_REPO="${FLUTTER_REPO_URL:-$DEFAULT_REPO}"
 FLUTTER_VERSION="${FLUTTER_VERSION:-latest}"
-CACHE_DIR="$HOME/.cache/flutter-flexible"
-INSTALL_DIR="$HOME/.flutter-flexible"
+CACHE_DIR="$HOME/.cache/flutter-tool"
+INSTALL_DIR="$HOME/.flutter-tool"
 BIN_DIR="$HOME/.local/bin"
 
 FLUTTER_BIN="$INSTALL_DIR/flutter/bin/flutter"
@@ -63,7 +63,7 @@ spinner() {
   printf "\r${COLOR_SUCCESS}✔ $msg${COLOR_RESET}\n"
 }
 
-basic_checks() { need curl; need unzip; need tar; }
+basic_checks() { need wget; need unzip; need tar; }
 
 is_installed() {
   [[ -x "$FLUTTER_BIN" ]] && "$FLUTTER_BIN" --version >/dev/null 2>&1
@@ -85,22 +85,24 @@ get_tag() {
   if [[ "$FLUTTER_VERSION" == "latest" ]]; then
     if [[ "$NO_API" -eq 0 ]]; then
       if command -v jq >/dev/null; then
-        tag=$(curl -s -H "Accept: application/vnd.github.v3+json" \
-          "https://api.github.com/repos/$FLUTTER_REPO/releases/latest" | jq -r '.tag_name // empty')
-      else
-        local pid
-        curl -s -H "Accept: application/vnd.github.v3+json" \
-          "https://api.github.com/repos/$FLUTTER_REPO/releases/latest" &
-        pid=$!
-        spinner $pid "Fetching latest tag"
-        wait $pid
-        tag=$(curl -s -H "Accept: application/vnd.github.v3+json" \
+        tag=$(wget -qO- \
+          --header="Accept: application/vnd.github.v3+json" \
           "https://api.github.com/repos/$FLUTTER_REPO/releases/latest" \
-          | grep -Po '"tag_name":.*?[^\\]",' | sed 's/.*"tag_name": "\(.*\)".*/\1/')
+          | jq -r '.tag_name // empty')
+      else
+        tag=$(wget -qO- \
+          --header="Accept: application/vnd.github.v3+json" \
+          "https://api.github.com/repos/$FLUTTER_REPO/releases/latest" \
+          | grep -Po '"tag_name":.*?[^\\]",' \
+          | sed 's/.*"tag_name": "\(.*\)".*/\1/')
       fi
     else
-      tag=$(curl -sI "https://github.com/$FLUTTER_REPO/releases/latest" \
-        | grep -i location | sed 's#.*/tag/##' | tr -d '\r' | sed 's/ *$//')
+      tag=$(wget -q --server-response --max-redirect=0 \
+        "https://github.com/$FLUTTER_REPO/releases/latest" 2>&1 \
+        | grep -i location \
+        | sed 's#.*/tag/##' \
+        | tr -d '\r' \
+        | sed 's/ *$//')
     fi
   else
     tag="$FLUTTER_VERSION"
@@ -113,12 +115,16 @@ get_asset_url() {
   local tag="$1" assets asset_url
   if [[ "$NO_API" -eq 0 ]]; then
     if command -v jq >/dev/null; then
-      assets=$(curl -s -H "Accept: application/vnd.github.v3+json" \
-        "https://api.github.com/repos/$FLUTTER_REPO/releases/tags/$tag" | jq -r '.assets[].browser_download_url // empty')
-    else
-      assets=$(curl -s -H "Accept: application/vnd.github.v3+json" \
+      assets=$(wget -qO- \
+        --header="Accept: application/vnd.github.v3+json" \
         "https://api.github.com/repos/$FLUTTER_REPO/releases/tags/$tag" \
-        | grep -Po '"browser_download_url":.*?[^\\]",' | sed 's/.*"browser_download_url": "\(.*\)".*/\1/')
+        | jq -r '.assets[].browser_download_url // empty')
+    else
+      assets=$(wget -qO- \
+        --header="Accept: application/vnd.github.v3+json" \
+        "https://api.github.com/repos/$FLUTTER_REPO/releases/tags/$tag" \
+        | grep -Po '"browser_download_url":.*?[^\\]",' \
+        | sed 's/.*"browser_download_url": "\(.*\)".*/\1/')
     fi
     if [[ "$FLUTTER_REPO" == "zhzhzhy/Flutter-SDK-ARM64" ]]; then
       asset_url=$(echo "$assets" | grep -Ei 'Flutter-SDK.*\.(zip|tar\.xz)' | head -n1)
@@ -164,7 +170,7 @@ fix_dart_sdk() {
 
   log "🚀 Fixing Dart SDK..."
   mkdir -p "$CACHE_DIR"
-  curl -L --fail --progress-bar -o "$dart_zip" "$dart_url"
+  wget -q --show-progress -O "$dart_zip" "$dart_url"
 
   log "[WORKING] Removing incompatible Dart SDK..."
   rm -rf "$INSTALL_DIR/flutter/bin/cache/dart-sdk"
@@ -249,7 +255,7 @@ install_flutter() {
   FLUTTER_FILE="$CACHE_DIR/flutter.${ext}"
 
   log "Downloading Flutter ($ext) from $ASSET_URL"
-  curl -L --fail --progress-bar -o "$FLUTTER_FILE" "$ASSET_URL"
+  wget -q --show-progress -O "$FLUTTER_FILE" "$ASSET_URL"
 
   log "[WORKING] Extracting Flutter..."
   tmpdir=$(mktemp -d "$INSTALL_DIR/flutter_tmp.XXXX")
@@ -290,6 +296,7 @@ upgrade_flutter() {
     die "Flutter is not installed, cannot upgrade."
   fi
   log "🚀 Upgrading Flutter..."
+  rm -rf "$INSTALL_DIR/flutter"
   install_flutter
 }
 
