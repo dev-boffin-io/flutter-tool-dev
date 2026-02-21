@@ -170,7 +170,7 @@ fix_dart_sdk() {
 
   log "🚀 Fixing Dart SDK..."
   mkdir -p "$CACHE_DIR"
-  wget -q --show-progress -O "$dart_zip" "$dart_url"
+  wget -q -O "$dart_zip" "$dart_url"
 
   log "[WORKING] Removing incompatible Dart SDK..."
   rm -rf "$INSTALL_DIR/flutter/bin/cache/dart-sdk"
@@ -255,10 +255,10 @@ install_flutter() {
   FLUTTER_FILE="$CACHE_DIR/flutter.${ext}"
 
   log "Downloading Flutter ($ext) from $ASSET_URL"
-  wget -q --show-progress -O "$FLUTTER_FILE" "$ASSET_URL"
+  wget -q -O "$FLUTTER_FILE" "$ASSET_URL"
 
   log "[WORKING] Extracting Flutter..."
-  tmpdir=$(mktemp -d "$INSTALL_DIR/flutter_tmp.XXXX")
+  tmpdir=$(mktemp -d -p "$INSTALL_DIR" flutter_tmpXXXXXX)
   mkdir -p "$tmpdir"
   if [[ "$ext" == "zip" ]]; then
     unzip -q "$FLUTTER_FILE" -d "$tmpdir"
