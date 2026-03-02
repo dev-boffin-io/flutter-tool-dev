@@ -21,7 +21,7 @@ A zero-dependency CLI tool that downloads, installs, and manages Flutter SDK on 
 ## Installation
 
 ```bash
-curl -L https://github.com/<your-org>/flutter-tool/releases/latest/download/flutter-tool \
+curl -L https://github.com/dev-boffin-io/flutter-tool-dev/raw/refs/heads/master/bin/flutter-tool \
   -o flutter-tool
 
 chmod +x flutter-tool
