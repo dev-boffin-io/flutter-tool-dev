@@ -31,20 +31,48 @@ if ! command -v go &>/dev/null; then
 fi
 
 # ==============================
+# CLEAN
+# ==============================
+clean_module() {
+    echo -e "${YELLOW}${BOLD}🧹 Cleaning previous build artifacts...${NC}"
+
+    # Remove any existing binaries inside OUTPUT_DIR if it exists
+    if [ -d "$OUTPUT_DIR" ]; then
+        BIN_COUNT=$(find "$OUTPUT_DIR" -maxdepth 1 -type f | wc -l)
+        if [ "$BIN_COUNT" -gt 0 ]; then
+            echo -e "${YELLOW}⚠ Removing $BIN_COUNT existing file(s) in $OUTPUT_DIR/${NC}"
+            find "$OUTPUT_DIR" -maxdepth 1 -type f -delete
+            echo -e "${GREEN}✔ $OUTPUT_DIR/ cleared${NC}"
+        else
+            echo -e "${GREEN}✔ $OUTPUT_DIR/ already empty${NC}"
+        fi
+    fi
+
+    # Clean Go build cache
+    go clean -cache -modcache -testcache
+    echo -e "${GREEN}✔ Go cache cleared${NC}"
+
+    # Remove go.mod and go.sum for a truly fresh init
+    for f in go.mod go.sum; do
+        if [ -f "$f" ]; then
+            rm -f "$f"
+            echo -e "${GREEN}✔ Removed $f${NC}"
+        fi
+    done
+
+    echo "----------------------------------------"
+}
+
+# ==============================
 # INIT MODULE + DEP
 # ==============================
 init_module() {
-    echo -e "${BLUE}${BOLD}📦 Checking Go module...${NC}"
+    echo -e "${BLUE}${BOLD}📦 Initialising Go module...${NC}"
 
-    if [ ! -f "go.mod" ]; then
-        go mod init flutter-tool
-        echo -e "${GREEN}✔ go.mod created${NC}"
-    else
-        echo -e "${GREEN}✔ go.mod exists${NC}"
-    fi
+    go mod init flutter-tool
+    echo -e "${GREEN}✔ go.mod created${NC}"
 
     echo -e "${BLUE}📥 Installing dependencies...${NC}"
-    
     go mod tidy
 }
 
@@ -55,12 +83,6 @@ build_binary() {
 
     mkdir -p "$OUTPUT_DIR"
     OUTPUT_PATH="${OUTPUT_DIR}/${APP_NAME}"
-
-    # 🔥 Remove old local binary
-    if [ -f "$OUTPUT_PATH" ]; then
-        echo -e "${YELLOW}⚠ Removing old binary: $OUTPUT_PATH${NC}"
-        rm -f "$OUTPUT_PATH"
-    fi
 
     echo -e "\n${BLUE}${BOLD}🔨 Building ${TARGET_OS}/${TARGET_ARCH}...${NC}"
 
@@ -98,7 +120,7 @@ install_global() {
 
             TARGET_PATH="/usr/local/bin/${APP_NAME}"
 
-            # 🔥 Remove old global binary if exists
+            # Remove old global binary if exists
             if [ -f "$TARGET_PATH" ]; then
                 echo -e "${YELLOW}⚠ Removing old installed binary: $TARGET_PATH${NC}"
                 sudo rm -f "$TARGET_PATH"
@@ -115,6 +137,7 @@ install_global() {
 # ==============================
 # MAIN
 # ==============================
+clean_module
 init_module
 build_binary
 install_global
